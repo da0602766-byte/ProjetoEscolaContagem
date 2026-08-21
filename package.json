@@ -1,0 +1,10 @@
+{
+  "name": "sistema-contagem-alunos",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Sistema mobile-first de contagem de alunos com persistência local.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  }
+}
