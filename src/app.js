@@ -25,6 +25,8 @@
   let actionLocked = false;
   let toastTimer = 0;
   let bootNotice = "";
+  let installPrompt = null;
+  let isInstalled = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
 
   if (loaded.status === "corrupt") {
     bootNotice = "Os dados salvos estavam inválidos. Uma cópia de segurança foi preservada e uma lista vazia foi aberta.";
@@ -80,6 +82,14 @@
     return timestamp ? `Salvo às ${formatTime(timestamp)}` : "Salvamento automático";
   }
 
+  function installButton() {
+    if (isInstalled || !installPrompt) return "";
+    return `
+      <button class="install-button" type="button" data-action="install-app">
+        <span aria-hidden="true">↓</span> Instalar aplicativo
+      </button>`;
+  }
+
   function renderSetup() {
     const sorted = Core.sortStudents(state.roster);
     const setupQuery = Core.foldName(searchTerms.setup);
@@ -110,6 +120,7 @@
               Histórico <span>${state.history.length}</span>
             </button>
             <div class="save-chip"><span aria-hidden="true">●</span> ${savedLabel(null)}</div>
+            ${installButton()}
           </div>
         </header>
 
@@ -565,7 +576,15 @@
     const action = button.dataset.action;
 
     try {
-      if (action === "dismiss-notice") {
+      if (action === "install-app") {
+        const currentPrompt = installPrompt;
+        if (!currentPrompt) return;
+        currentPrompt.prompt();
+        const choice = await currentPrompt.userChoice;
+        installPrompt = null;
+        render();
+        showToast(choice.outcome === "accepted" ? "Aplicativo instalado com sucesso." : "Instalação cancelada.", choice.outcome === "accepted" ? "success" : "info");
+      } else if (action === "dismiss-notice") {
         bootNotice = "";
         render();
       } else if (action === "view-history") {
@@ -683,6 +702,27 @@
       handleError(error);
     }
   });
+
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    installPrompt = event;
+    render();
+  });
+
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+    isInstalled = true;
+    render();
+    showToast("Aplicativo instalado e pronto para uso.");
+  });
+
+  if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js").catch(() => {
+        showToast("O modo offline não pôde ser ativado neste acesso.", "error");
+      });
+    });
+  }
 
   render();
 

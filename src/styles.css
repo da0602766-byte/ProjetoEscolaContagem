@@ -205,6 +205,30 @@ button:disabled {
   font-size: 0.65rem;
 }
 
+.install-button {
+  display: inline-flex;
+  min-height: 2.45rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  margin-top: 1.25rem;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  padding: 0.45rem 0.8rem;
+  color: var(--primary-950);
+  background: white;
+  box-shadow: 0 8px 20px rgba(28, 14, 57, 0.2);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 850;
+}
+
+.install-button span {
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .system-alert {
   display: flex;
   align-items: flex-start;
@@ -1286,6 +1310,9 @@ input:focus {
 
   .hero-actions {
     justify-content: flex-end;
+  }
+
+  .install-button {
     margin-top: 0;
   }
 

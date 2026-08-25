@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Ícone do aplicativo Contagem de Alunos">
+  <defs>
+    <linearGradient id="background" x1="80" y1="56" x2="430" y2="458" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#4c1d95"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#background)"/>
+  <circle cx="187" cy="190" r="54" fill="#ede9fe"/>
+  <circle cx="332" cy="207" r="44" fill="#ddd6fe"/>
+  <path d="M84 387c0-73 45-118 103-118s103 45 103 118v17H84v-17Z" fill="#fff"/>
+  <path d="M268 387c0-57 29-96 73-107 49 12 82 53 82 107v17H268v-17Z" fill="#ede9fe"/>
+  <path d="m322 326 26 27 57-67" fill="none" stroke="#34d399" stroke-linecap="round" stroke-linejoin="round" stroke-width="25"/>
+</svg>
