@@ -1,9 +1,9 @@
 (function attachSchoolCounterCore(global) {
   "use strict";
 
-  const VERSION = 2;
-  const STORAGE_KEY = "contagem-alunos:v2";
-  const PREVIOUS_STORAGE_KEY = "contagem-alunos:v1";
+  const VERSION = 3;
+  const STORAGE_KEY = "contagem-alunos:v3";
+  const PREVIOUS_STORAGE_KEYS = ["contagem-alunos:v2", "contagem-alunos:v1"];
   const LEGACY_KEYS = { roster: "sc_roster", session: "sc_session" };
   const MAX_NAME_LENGTH = 100;
   const collator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
@@ -35,7 +35,7 @@
   }
 
   function createInitialState() {
-    return { version: VERSION, roster: [], session: null };
+    return { version: VERSION, roster: [], session: null, history: [] };
   }
 
   function isRecord(value) {
@@ -66,9 +66,25 @@
     return true;
   }
 
+  function isValidHistoryEntry(entry) {
+    if (!isRecord(entry)) return false;
+    if (typeof entry.id !== "string" || !entry.id || typeof entry.sessionId !== "string") return false;
+    if (!["completed", "cancelled"].includes(entry.outcome)) return false;
+    if (!["sequential", "free"].includes(entry.mode)) return false;
+    if (!Number.isInteger(entry.total) || entry.total < 1) return false;
+    if (!Array.isArray(entry.countedStudents) || !entry.countedStudents.every(isValidStudent)) return false;
+    if (!hasUniqueStudents(entry.countedStudents) || entry.counted !== entry.countedStudents.length) return false;
+    if (entry.counted < 0 || entry.counted > entry.total) return false;
+    if (![entry.startedAt, entry.endedAt].every(Number.isFinite)) return false;
+    if (entry.outcome === "completed" && entry.mode === "sequential" && entry.counted !== entry.total) return false;
+    return true;
+  }
+
   function validateState(state) {
     if (!isRecord(state) || state.version !== VERSION || !Array.isArray(state.roster)) return false;
     if (!state.roster.every(isValidStudent) || !hasUniqueStudents(state.roster)) return false;
+    if (!Array.isArray(state.history) || !state.history.every(isValidHistoryEntry)) return false;
+    if (new Set(state.history.map((entry) => entry.id)).size !== state.history.length) return false;
     if (state.session === null) return true;
 
     const session = state.session;
@@ -197,6 +213,29 @@
     };
   }
 
+  function appendHistory(state, session, outcome, endedAt) {
+    if (state.history.some((entry) => entry.sessionId === session.id)) return state.history;
+    const studentsById = new Map(session.students.map((student) => [student.id, student]));
+    const countedStudents = session.countedStudentIds
+      .map((id) => studentsById.get(id))
+      .filter(Boolean)
+      .map((student) => ({ ...student }));
+    return [
+      ...state.history,
+      {
+        id: createId(),
+        sessionId: session.id,
+        outcome,
+        mode: session.mode,
+        total: session.students.length,
+        counted: countedStudents.length,
+        countedStudents,
+        startedAt: session.startedAt,
+        endedAt,
+      },
+    ];
+  }
+
   function advanceSession(state, now = Date.now(), expectedStudentId = null) {
     const session = state.session;
     if (!session || session.status !== "counting" || session.mode !== "sequential") {
@@ -209,19 +248,21 @@
     const countedStudentIds = [...session.countedStudentIds, completedId];
     const counted = countedStudentIds.length;
     const done = counted === session.students.length;
+    const nextSession = {
+      ...session,
+      countedStudentIds,
+      counted,
+      currentIndex: counted,
+      currentStudentId: done ? null : session.students[counted].id,
+      lastCompletedId: completedId,
+      status: done ? "done" : "counting",
+      updatedAt: now,
+      completedAt: done ? now : null,
+    };
     return {
       ...state,
-      session: {
-        ...session,
-        countedStudentIds,
-        counted,
-        currentIndex: counted,
-        currentStudentId: done ? null : session.students[counted].id,
-        lastCompletedId: completedId,
-        status: done ? "done" : "counting",
-        updatedAt: now,
-        completedAt: done ? now : null,
-      },
+      session: nextSession,
+      history: done ? appendHistory(state, nextSession, "completed", now) : state.history,
     };
   }
 
@@ -281,14 +322,31 @@
     if (session.counted === 0) {
       throw new DomainError("EMPTY_COUNT", "Marque pelo menos um aluno antes de concluir.");
     }
+    const nextSession = { ...session, status: "done", updatedAt: now, completedAt: now };
     return {
       ...state,
-      session: { ...session, status: "done", updatedAt: now, completedAt: now },
+      session: nextSession,
+      history: appendHistory(state, nextSession, "completed", now),
     };
   }
 
-  function discardSession(state) {
-    return { ...state, session: null };
+  function discardSession(state, now = Date.now()) {
+    if (!state.session) return state;
+    const history = state.session.status === "counting"
+      ? appendHistory(state, state.session, "cancelled", now)
+      : state.history;
+    return { ...state, session: null, history };
+  }
+
+  function deleteHistoryEntry(state, entryId) {
+    if (!state.history.some((entry) => entry.id === entryId)) {
+      throw new DomainError("HISTORY_NOT_FOUND", "Registro do histórico não encontrado.");
+    }
+    return { ...state, history: state.history.filter((entry) => entry.id !== entryId) };
+  }
+
+  function clearHistory(state) {
+    return { ...state, history: [] };
   }
 
   function normalizeLegacyStudent(student) {
@@ -300,7 +358,7 @@
 
   function buildSequentialMigration(roster, oldSession) {
     if (!isRecord(oldSession) || !Array.isArray(oldSession.students)) {
-      const candidate = { version: VERSION, roster, session: null };
+      const candidate = { version: VERSION, roster, session: null, history: [] };
       return validateState(candidate) ? candidate : null;
     }
     const students = oldSession.students.map(normalizeLegacyStudent).filter(Boolean);
@@ -315,6 +373,7 @@
     const candidate = {
       version: VERSION,
       roster: students,
+      history: [],
       session: {
         id: typeof oldSession.id === "string" ? oldSession.id : createId(),
         mode: "sequential",
@@ -332,20 +391,46 @@
           : null,
       },
     };
+    if (isDone) candidate.history = appendHistory(candidate, candidate.session, "completed", updatedAt);
+    return validateState(candidate) ? candidate : null;
+  }
+
+  function buildVersionTwoMigration(parsed) {
+    if (!isRecord(parsed) || !Array.isArray(parsed.roster)) return null;
+    const roster = parsed.roster.map(normalizeLegacyStudent).filter(Boolean);
+    if (parsed.session === null) {
+      const candidate = { version: VERSION, roster, session: null, history: [] };
+      return validateState(candidate) ? candidate : null;
+    }
+    if (!isRecord(parsed.session) || !Array.isArray(parsed.session.students)) return null;
+    const students = parsed.session.students.map(normalizeLegacyStudent).filter(Boolean);
+    const session = {
+      ...parsed.session,
+      students,
+      countedStudentIds: Array.isArray(parsed.session.countedStudentIds)
+        ? [...parsed.session.countedStudentIds]
+        : students.slice(0, parsed.session.counted ?? 0).map((student) => student.id),
+    };
+    const candidate = { version: VERSION, roster: students, session, history: [] };
+    if (session.status === "done") {
+      candidate.history = appendHistory(candidate, session, "completed", session.completedAt ?? session.updatedAt);
+    }
     return validateState(candidate) ? candidate : null;
   }
 
   function migratePreviousVersion(storage) {
-    const raw = storage.getItem(PREVIOUS_STORAGE_KEY);
-    if (!raw) return null;
-    try {
-      const parsed = JSON.parse(raw);
-      if (!isRecord(parsed) || !Array.isArray(parsed.roster)) return null;
-      const roster = parsed.roster.map(normalizeLegacyStudent).filter(Boolean);
-      return buildSequentialMigration(roster, parsed.session);
-    } catch {
-      return null;
+    for (const key of PREVIOUS_STORAGE_KEYS) {
+      const raw = storage.getItem(key);
+      if (!raw) continue;
+      try {
+        const parsed = JSON.parse(raw);
+        if (!isRecord(parsed) || !Array.isArray(parsed.roster)) continue;
+        if (parsed.version === 2) return buildVersionTwoMigration(parsed);
+        const roster = parsed.roster.map(normalizeLegacyStudent).filter(Boolean);
+        return buildSequentialMigration(roster, parsed.session);
+      } catch {}
     }
+    return null;
   }
 
   function migrateLegacy(storage) {
@@ -377,7 +462,7 @@
         seenNames.add(folded);
       }
     }
-    const candidate = { version: VERSION, roster: uniqueRoster, session: null };
+    const candidate = { version: VERSION, roster: uniqueRoster, session: null, history: [] };
     return validateState(candidate) ? candidate : null;
   }
 
@@ -470,6 +555,8 @@
     toggleFreeStudent,
     finishFreeSession,
     discardSession,
+    deleteHistoryEntry,
+    clearHistory,
     createRepository,
   });
 })(globalThis);

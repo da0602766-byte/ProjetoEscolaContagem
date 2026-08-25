@@ -222,8 +222,82 @@ test("migra uma sessão v1 sem perder a posição", () => {
   }));
   const loaded = Core.createRepository(storage).load();
   assert.equal(loaded.status, "migrated");
-  assert.equal(loaded.state.version, 2);
+  assert.equal(loaded.state.version, 3);
   assert.equal(loaded.state.session.mode, "sequential");
   assert.deepEqual(loaded.state.session.countedStudentIds, ["a"]);
   assert.equal(loaded.state.session.currentStudentId, "b");
+});
+
+test("registra automaticamente uma contagem sequencial concluída", () => {
+  let state = Core.startSession(stateWithNames("Ana", "Bia"), 1000, "sequential");
+  state = Core.advanceSession(state, 2000);
+  state = Core.advanceSession(state, 3000);
+  assert.equal(state.history.length, 1);
+  assert.equal(state.history[0].outcome, "completed");
+  assert.equal(state.history[0].mode, "sequential");
+  assert.equal(state.history[0].counted, 2);
+  assert.deepEqual(state.history[0].countedStudents.map((student) => student.name), ["Ana", "Bia"]);
+});
+
+test("registra contagem livre concluída com apenas os escolhidos", () => {
+  let state = Core.startSession(stateWithNames("Ana", "Bia", "Caio"), 1000, "free");
+  const caio = state.session.students.find((student) => student.name === "Caio");
+  state = Core.toggleFreeStudent(state, caio.id, 2000, false);
+  state = Core.finishFreeSession(state, 3000);
+  assert.equal(state.history[0].outcome, "completed");
+  assert.equal(state.history[0].counted, 1);
+  assert.equal(state.history[0].total, 3);
+  assert.deepEqual(state.history[0].countedStudents.map((student) => student.name), ["Caio"]);
+});
+
+test("registra contagem encerrada, inclusive sem alunos contabilizados", () => {
+  let state = Core.startSession(stateWithNames("Ana", "Bia"), 1000, "free");
+  state = Core.discardSession(state, 2500);
+  assert.equal(state.session, null);
+  assert.equal(state.history.length, 1);
+  assert.equal(state.history[0].outcome, "cancelled");
+  assert.equal(state.history[0].counted, 0);
+  assert.equal(state.history[0].endedAt, 2500);
+});
+
+test("remove um registro ou limpa o histórico", () => {
+  let state = Core.startSession(stateWithNames("Ana"), 1000);
+  state = Core.advanceSession(state, 2000);
+  const entryId = state.history[0].id;
+  state = Core.deleteHistoryEntry(state, entryId);
+  assert.equal(state.history.length, 0);
+  assert.throws(() => Core.deleteHistoryEntry(state, entryId), { code: "HISTORY_NOT_FOUND" });
+
+  state = Core.discardSession(state);
+  state = Core.startSession(state, 3000, "free");
+  state = Core.discardSession(state, 4000);
+  assert.equal(Core.clearHistory(state).history.length, 0);
+});
+
+test("migra dados da versão 2 e arquiva resultado concluído", () => {
+  const storage = new MemoryStorage();
+  const students = [{ id: "a", name: "Ana" }];
+  storage.setItem("contagem-alunos:v2", JSON.stringify({
+    version: 2,
+    roster: students,
+    session: {
+      id: "v2-done",
+      mode: "sequential",
+      students,
+      currentIndex: 1,
+      currentStudentId: null,
+      lastCompletedId: "a",
+      countedStudentIds: ["a"],
+      counted: 1,
+      status: "done",
+      startedAt: 1000,
+      updatedAt: 2000,
+      completedAt: 2000,
+    },
+  }));
+  const loaded = Core.createRepository(storage).load();
+  assert.equal(loaded.status, "migrated");
+  assert.equal(loaded.state.version, 3);
+  assert.equal(loaded.state.history.length, 1);
+  assert.equal(loaded.state.history[0].outcome, "completed");
 });

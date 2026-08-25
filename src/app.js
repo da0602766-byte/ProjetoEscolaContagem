@@ -20,6 +20,7 @@
   const loaded = repository.load();
   let state = loaded.state;
   let editingId = null;
+  let activeView = "main";
   const searchTerms = { setup: "", free: "" };
   let actionLocked = false;
   let toastTimer = 0;
@@ -104,7 +105,12 @@
                 : `${state.roster.length} ${plural(state.roster.length, "aluno")} ${plural(state.roster.length, "cadastrado")}`}
             </p>
           </div>
-          <div class="save-chip"><span aria-hidden="true">●</span> ${savedLabel(null)}</div>
+          <div class="hero-actions">
+            <button class="hero-button hero-button--history" type="button" data-action="view-history">
+              Histórico <span>${state.history.length}</span>
+            </button>
+            <div class="save-chip"><span aria-hidden="true">●</span> ${savedLabel(null)}</div>
+          </div>
         </header>
 
         ${storageWarning()}
@@ -343,6 +349,61 @@
       </main>`;
   }
 
+  function renderHistory() {
+    const entries = [...state.history].sort((a, b) => b.endedAt - a.endedAt);
+    const cards = entries.length
+      ? entries.map((entry) => {
+          const completed = entry.outcome === "completed";
+          const names = entry.countedStudents.length
+            ? `<ol class="history-names">${entry.countedStudents.map((student) => `<li>${escapeHtml(student.name)}</li>`).join("")}</ol>`
+            : `<p class="history-no-names">Nenhum aluno havia sido contabilizado.</p>`;
+          return `
+            <article class="history-card">
+              <div class="history-card__top">
+                <div>
+                  <span class="history-status history-status--${entry.outcome}">${completed ? "Concluída" : "Encerrada"}</span>
+                  <h2>${entry.mode === "free" ? "Contagem livre" : "Ordem alfabética"}</h2>
+                  <time datetime="${new Date(entry.endedAt).toISOString()}">${formatDateTime(entry.endedAt)}</time>
+                </div>
+                <strong class="history-total">${entry.counted}<small> de ${entry.total}</small></strong>
+              </div>
+              <details>
+                <summary>Ver alunos contabilizados</summary>
+                ${names}
+                <p class="history-started">Iniciada em ${formatDateTime(entry.startedAt)}</p>
+              </details>
+              <button class="text-button text-button--danger history-delete" type="button" data-action="delete-history" data-id="${escapeHtml(entry.id)}">
+                Excluir registro
+              </button>
+            </article>`;
+        }).join("")
+      : `<div class="empty-state history-empty">
+          <div class="empty-state__icon" aria-hidden="true">◷</div>
+          <h2>Nenhuma contagem registrada</h2>
+          <p>Contagens concluídas e encerradas aparecerão aqui automaticamente.</p>
+        </div>`;
+
+    return `
+      <main class="app-shell history-screen" id="main-content">
+        <header class="hero hero--history">
+          <div>
+            <p class="eyebrow">Registros salvos</p>
+            <h1>Histórico de contagens</h1>
+            <p class="hero__subtitle">${entries.length} ${plural(entries.length, "registro")}</p>
+          </div>
+          <button class="hero-button" type="button" data-action="back-history">← Voltar</button>
+        </header>
+        ${storageWarning()}
+        <section class="history-workspace">
+          <div class="history-toolbar">
+            <p>Os registros ficam armazenados neste navegador.</p>
+            ${entries.length ? `<button class="text-button text-button--danger" type="button" data-action="clear-history">Limpar histórico</button>` : ""}
+          </div>
+          <div class="history-list">${cards}</div>
+        </section>
+      </main>`;
+  }
+
   function renderDone() {
     const session = state.session;
     const total = session.students.length;
@@ -369,13 +430,15 @@
           </dl>
 
           <button class="button button--primary" type="button" data-action="new-count">Preparar nova contagem</button>
+          <button class="button button--secondary done-history-button" type="button" data-action="view-history">Ver histórico</button>
           <p class="done-hint">A lista atual será mantida e voltará a ficar disponível para edição.</p>
         </section>
       </main>`;
   }
 
   function render() {
-    if (state.session?.status === "counting" && state.session.mode === "free") app.innerHTML = renderFreeCounting();
+    if (activeView === "history") app.innerHTML = renderHistory();
+    else if (state.session?.status === "counting" && state.session.mode === "free") app.innerHTML = renderFreeCounting();
     else if (state.session?.status === "counting") app.innerHTML = renderCounting();
     else if (state.session?.status === "done") app.innerHTML = renderDone();
     else app.innerHTML = renderSetup();
@@ -505,6 +568,30 @@
       if (action === "dismiss-notice") {
         bootNotice = "";
         render();
+      } else if (action === "view-history") {
+        activeView = "history";
+        render();
+      } else if (action === "back-history") {
+        activeView = "main";
+        render();
+      } else if (action === "delete-history") {
+        const entry = state.history.find((item) => item.id === button.dataset.id);
+        if (!entry) return;
+        const confirmed = await confirmAction({
+          title: "Excluir este registro?",
+          message: `A contagem de ${formatDateTime(entry.endedAt)} será removida permanentemente do histórico.`,
+          confirmLabel: "Excluir registro",
+          danger: true,
+        });
+        if (confirmed) commit(Core.deleteHistoryEntry(state, entry.id), "Registro excluído.");
+      } else if (action === "clear-history") {
+        const confirmed = await confirmAction({
+          title: "Limpar todo o histórico?",
+          message: `Os ${state.history.length} ${plural(state.history.length, "registro")} serão removidos permanentemente.`,
+          confirmLabel: "Limpar histórico",
+          danger: true,
+        });
+        if (confirmed) commit(Core.clearHistory(state), "Histórico removido.");
       } else if (action === "edit") {
         editingId = button.dataset.id;
         render();

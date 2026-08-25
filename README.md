@@ -13,6 +13,8 @@ Abra `index.html` em um navegador moderno. Não é necessário instalar dependê
 
 O navegador salva automaticamente a lista, o modo escolhido, os alunos contabilizados, o aluno atual quando aplicável e o resultado da sessão no `localStorage`. A lista fica bloqueada enquanto existe uma contagem em andamento.
 
+O histórico registra tanto contagens concluídas quanto encerradas, com data, modo, progresso e nomes contabilizados. Registros individuais ou todo o histórico só podem ser excluídos após confirmação.
+
 ## Testes
 
 Com Node.js instalado, execute:
