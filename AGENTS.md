@@ -6,9 +6,11 @@ Aplicação web estática em HTML, CSS e JavaScript puro. Não adicione framewor
 
 - `index.html`: documento e pontos de montagem acessíveis.
 - `src/core.js`: regras de domínio, validação, transições e persistência.
-- `src/app.js`: renderização e eventos da interface.
+- `src/componentes/`: peças visuais reutilizáveis (botão de instalar, barra de progresso, toast, diálogo de confirmação, aviso de sistema, caixa de busca) usadas por `src/app.js`.
+- `src/app.js`: orquestra as telas e os eventos da interface, usando `core.js` e `src/componentes/`.
 - `src/styles.css`: estilos mobile-first e adaptação para desktop.
 - `test/core.test.js`: testes das regras e do armazenamento.
+- `estudo/`: material de estudo sobre a arquitetura e os conceitos de JavaScript usados no projeto.
 
 ## Comandos
 

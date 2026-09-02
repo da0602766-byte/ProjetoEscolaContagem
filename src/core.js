@@ -1,13 +1,32 @@
+// Este arquivo \u00e9 o "n\u00facleo" (core) do sistema: cont\u00e9m somente regras de neg\u00f3cio,
+// valida\u00e7\u00e3o e persist\u00eancia. N\u00e3o manipula o DOM nem sabe como a tela \u00e9 desenhada
+// (isso \u00e9 responsabilidade do src/app.js). Essa separa\u00e7\u00e3o \u00e9 conhecida como
+// "l\u00f3gica de dom\u00ednio" vs "camada de apresenta\u00e7\u00e3o".
+//
+// Todas as fun\u00e7\u00f5es de muta\u00e7\u00e3o de estado (addStudent, startSession, etc.) seguem
+// o mesmo padr\u00e3o: recebem o estado atual e devolvem um ESTADO NOVO, sem alterar
+// o original (imutabilidade). Isso facilita testar, desfazer a\u00e7\u00f5es e evitar bugs
+// de refer\u00eancia compartilhada. Veja estudo/imutabilidade.md para mais detalhes.
 (function attachSchoolCounterCore(global) {
   "use strict";
 
+  // Vers\u00e3o do formato de dados salvo. Sempre que a estrutura do estado mudar de
+  // forma incompat\u00edvel, incremente esse n\u00famero e crie uma rotina de migra\u00e7\u00e3o
+  // (veja migratePreviousVersion / migrateLegacy mais abaixo).
   const VERSION = 3;
   const STORAGE_KEY = "contagem-alunos:v3";
+  // Chaves usadas por vers\u00f5es anteriores do app, mantidas aqui apenas para
+  // permitir a migra\u00e7\u00e3o autom\u00e1tica dos dados de quem j\u00e1 usava o sistema.
   const PREVIOUS_STORAGE_KEYS = ["contagem-alunos:v2", "contagem-alunos:v1"];
   const LEGACY_KEYS = { roster: "sc_roster", session: "sc_session" };
   const MAX_NAME_LENGTH = 100;
+  // Intl.Collator compara textos respeitando acentos e n\u00fameros como um humano
+  // ordenaria (ex.: "\u00c1gata" antes de "Beatriz", "Aluno 2" antes de "Aluno 10").
   const collator = new Intl.Collator("pt-BR", { sensitivity: "base", numeric: true });
 
+  // Erro customizado para falhas de regra de neg\u00f3cio (nome duplicado, lista
+  // bloqueada, etc.), diferente de um erro de programa\u00e7\u00e3o. O `code` permite que
+  // quem chamar identifique o motivo sem depender do texto da mensagem.
   class DomainError extends Error {
     constructor(code, message) {
       super(message);
@@ -16,10 +35,14 @@
     }
   }
 
+  // Remove espa\u00e7os nas pontas e colapsa espa\u00e7os duplicados no meio do nome.
   function normalizeName(value) {
     return String(value ?? "").trim().replace(/\s+/g, " ");
   }
 
+  // Gera uma vers\u00e3o "dobrada" do nome para compara\u00e7\u00e3o: sem acentos e em
+  // min\u00fasculas. Usada para detectar duplicidade ("Ana" e "ANA" e "ana" e "An\u00e0"
+  // devem ser tratados como o mesmo aluno).
   function foldName(value) {
     return normalizeName(value)
       .normalize("NFD")
@@ -27,6 +50,9 @@
       .toLocaleLowerCase("pt-BR");
   }
 
+  // Cria um identificador \u00fanico para cada aluno/sess\u00e3o/registro de hist\u00f3rico.
+  // Usa crypto.randomUUID quando dispon\u00edvel (mais seguro); caso contr\u00e1rio,
+  // recorre a um fallback simples baseado em timestamp + n\u00famero aleat\u00f3rio.
   function createId() {
     if (global.crypto && typeof global.crypto.randomUUID === "function") {
       return global.crypto.randomUUID();
@@ -34,14 +60,20 @@
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
+  // Estado inicial usado quando n\u00e3o h\u00e1 nada salvo ainda.
   function createInitialState() {
     return { version: VERSION, roster: [], session: null, history: [] };
   }
 
+  // Verifica se o valor é um "objeto simples" (não null, não array). Usado
+  // pelas funções de validação abaixo antes de acessar propriedades.
   function isRecord(value) {
     return Boolean(value) && typeof value === "object" && !Array.isArray(value);
   }
 
+  // Confere se um objeto tem o formato exato de um aluno válido. Isso é
+  // importante porque o estado pode vir do localStorage, que pode conter
+  // dados corrompidos ou adulterados — nunca confiamos "cegamente" nele.
   function isValidStudent(student) {
     return (
       isRecord(student) &&
@@ -54,6 +86,8 @@
     );
   }
 
+  // Garante que não existam dois alunos com o mesmo id ou com nomes iguais
+  // (ignorando acentos/maiúsculas), tanto na lista geral quanto em uma sessão.
   function hasUniqueStudents(students) {
     const ids = new Set();
     const names = new Set();
@@ -66,6 +100,9 @@
     return true;
   }
 
+  // Valida um registro do histórico (uma contagem já finalizada ou cancelada),
+  // conferindo consistência entre "quantos foram contados" e a lista real de
+  // alunos contados.
   function isValidHistoryEntry(entry) {
     if (!isRecord(entry)) return false;
     if (typeof entry.id !== "string" || !entry.id || typeof entry.sessionId !== "string") return false;
@@ -80,6 +117,10 @@
     return true;
   }
 
+  // Função central de validação: confere se o estado inteiro (lista de alunos,
+  // sessão de contagem ativa e histórico) é internamente consistente. É chamada
+  // sempre antes de salvar e sempre que dados são carregados do localStorage,
+  // funcionando como uma "rede de segurança" contra estados corrompidos.
   function validateState(state) {
     if (!isRecord(state) || state.version !== VERSION || !Array.isArray(state.roster)) return false;
     if (!state.roster.every(isValidStudent) || !hasUniqueStudents(state.roster)) return false;
@@ -129,12 +170,17 @@
     return session.lastCompletedId === expectedLastId;
   }
 
+  // Regra de negócio: a lista de alunos só pode ser editada (adicionar,
+  // renomear, remover, limpar) quando não há nenhuma contagem em andamento.
   function assertEditable(state) {
     if (state.session !== null) {
       throw new DomainError("ROSTER_LOCKED", "A lista está bloqueada durante uma contagem.");
     }
   }
 
+  // Valida o nome digitado para um novo aluno ou para renomear um existente:
+  // não pode ser vazio, não pode passar do tamanho máximo e não pode duplicar
+  // um nome já cadastrado (ignorando o próprio aluno ao renomear, via `ignoredId`).
   function validateNewName(state, rawName, ignoredId = null) {
     const name = normalizeName(rawName);
     if (!name) throw new DomainError("EMPTY_NAME", "Digite o nome do aluno.");
@@ -148,12 +194,15 @@
     return name;
   }
 
+  // Adiciona um aluno novo ao final da lista (a ordem visual/alfabética é
+  // aplicada depois, na hora de renderizar/iniciar a contagem — veja sortStudents).
   function addStudent(state, rawName) {
     assertEditable(state);
     const name = validateNewName(state, rawName);
     return { ...state, roster: [...state.roster, { id: createId(), name }] };
   }
 
+  // Troca o nome de um aluno existente, mantendo seu id.
   function renameStudent(state, studentId, rawName) {
     assertEditable(state);
     if (!state.roster.some((student) => student.id === studentId)) {
@@ -174,15 +223,24 @@
     return { ...state, roster: state.roster.filter((student) => student.id !== studentId) };
   }
 
+  // Apaga todos os alunos cadastrados (usado no botão "Limpar toda a lista").
   function clearRoster(state) {
     assertEditable(state);
     return { ...state, roster: [] };
   }
 
+  // Ordena os alunos em ordem alfabética (pt-BR) usando o collator definido
+  // no topo do arquivo. Retorna uma cópia nova; não altera o array recebido.
   function sortStudents(students) {
     return [...students].sort((a, b) => collator.compare(a.name, b.name));
   }
 
+  // Inicia uma nova sessão de contagem a partir da lista de alunos atual.
+  // `mode` define o tipo de contagem:
+  //  - "sequential": os alunos aparecem um de cada vez, em ordem alfabética,
+  //    e precisam ser confirmados em sequência (veja advanceSession/undoSession).
+  //  - "free": todos os alunos aparecem numa lista e podem ser marcados/
+  //    desmarcados em qualquer ordem (veja toggleFreeStudent/finishFreeSession).
   function startSession(state, now = Date.now(), mode = "sequential") {
     if (state.session !== null) {
       throw new DomainError("SESSION_EXISTS", "Já existe uma contagem ativa ou concluída.");
@@ -213,6 +271,10 @@
     };
   }
 
+  // Registra o resultado de uma sessão (concluída ou cancelada) no histórico.
+  // `outcome` é "completed" quando a contagem terminou normalmente e
+  // "cancelled" quando o usuário encerrou antes do fim. Evita duplicar o
+  // mesmo registro se a função for chamada mais de uma vez para a mesma sessão.
   function appendHistory(state, session, outcome, endedAt) {
     if (state.history.some((entry) => entry.sessionId === session.id)) return state.history;
     const studentsById = new Map(session.students.map((student) => [student.id, student]));
@@ -236,6 +298,12 @@
     ];
   }
 
+  // Confirma o aluno atual da contagem sequencial e avança para o próximo.
+  // `expectedStudentId` é uma proteção contra "ações desatualizadas": se a
+  // tela do usuário estava mostrando um aluno que já não é mais o atual
+  // (por exemplo, dois cliques rápidos), a ação é rejeitada em vez de avançar
+  // o aluno errado. Quando o último aluno é confirmado, a sessão passa para
+  // "done" e um registro é criado automaticamente no histórico.
   function advanceSession(state, now = Date.now(), expectedStudentId = null) {
     const session = state.session;
     if (!session || session.status !== "counting" || session.mode !== "sequential") {
@@ -266,6 +334,9 @@
     };
   }
 
+  // Desfaz a última confirmação da contagem sequencial, voltando ao aluno
+  // anterior (botão "Corrigir anterior"). Só funciona se já houver pelo menos
+  // um aluno contado.
   function undoSession(state, now = Date.now()) {
     const session = state.session;
     if (!session || session.status !== "counting" || session.mode !== "sequential" || session.counted === 0) {
@@ -287,6 +358,9 @@
     };
   }
 
+  // Marca ou desmarca um aluno na contagem livre. `expectedSelected` funciona
+  // como o `expectedStudentId` de advanceSession: evita que um clique
+  // desatualizado desfaça uma marcação que o usuário já tinha feito de outra forma.
   function toggleFreeStudent(state, studentId, now = Date.now(), expectedSelected = null) {
     const session = state.session;
     if (!session || session.status !== "counting" || session.mode !== "free") {
@@ -314,6 +388,8 @@
     };
   }
 
+  // Conclui a contagem livre (botão "Concluir"). Diferente do modo sequencial,
+  // não é preciso marcar todos os alunos — basta ter marcado pelo menos um.
   function finishFreeSession(state, now = Date.now()) {
     const session = state.session;
     if (!session || session.status !== "counting" || session.mode !== "free") {
@@ -330,6 +406,11 @@
     };
   }
 
+  // Encerra a sessão atual, seja ela uma contagem em andamento (botão
+  // "Encerrar", que registra como "cancelled" no histórico) ou uma contagem
+  // já concluída (botão "Preparar nova contagem", que só libera a lista para
+  // edição, já que o resultado foi salvo antes). Em ambos os casos a lista de
+  // alunos volta a ficar editável.
   function discardSession(state, now = Date.now()) {
     if (!state.session) return state;
     const history = state.session.status === "counting"
@@ -338,6 +419,7 @@
     return { ...state, session: null, history };
   }
 
+  // Remove um único registro do histórico.
   function deleteHistoryEntry(state, entryId) {
     if (!state.history.some((entry) => entry.id === entryId)) {
       throw new DomainError("HISTORY_NOT_FOUND", "Registro do histórico não encontrado.");
@@ -345,10 +427,20 @@
     return { ...state, history: state.history.filter((entry) => entry.id !== entryId) };
   }
 
+  // Apaga todo o histórico de contagens.
   function clearHistory(state) {
     return { ...state, history: [] };
   }
 
+  // --- Migração de dados antigos --------------------------------------
+  // As funções abaixo convertem dados salvos por versões antigas do app
+  // (diferentes chaves e formatos no localStorage) para o formato atual
+  // (VERSION = 3), para que o usuário não perca a lista/histórico ao atualizar
+  // o sistema. Cada migração termina validando o resultado com validateState;
+  // se algo não bater, a migração é descartada (retorna null) em vez de
+  // arriscar carregar um estado inconsistente.
+
+  // Normaliza um aluno vindo de um formato antigo, garantindo id e nome válidos.
   function normalizeLegacyStudent(student) {
     if (!isRecord(student) || typeof student.name !== "string") return null;
     const name = normalizeName(student.name);
@@ -466,6 +558,12 @@
     return validateState(candidate) ? candidate : null;
   }
 
+  // --- Persistência -----------------------------------------------------
+  // createRepository é uma "fábrica" que encapsula toda a leitura/escrita no
+  // localStorage (o parâmetro `storage`), expondo apenas load/save/isAvailable.
+  // Isso é o padrão de repositório: o resto do app não sabe (nem precisa saber)
+  // que os dados são guardados no localStorage — poderia ser trocado por outro
+  // mecanismo de armazenamento sem mudar o restante do código.
   function createRepository(storage) {
     let memory = createInitialState();
     let available = Boolean(storage);
@@ -480,6 +578,10 @@
       }
     }
 
+    // Salva o estado no localStorage, sempre validando antes (defesa contra
+    // salvar um estado quebrado). Se o navegador bloquear o armazenamento
+    // (ex.: modo privado, cota cheia), o app continua funcionando só na
+    // memória (`persisted: false`) e avisa o usuário na interface.
     function save(nextState) {
       if (!validateState(nextState)) throw new DomainError("INVALID_STATE", "O estado do sistema é inválido.");
       memory = nextState;
@@ -493,6 +595,11 @@
       }
     }
 
+    // Carrega o estado salvo. Se não houver nada na chave atual, tenta migrar
+    // dados de versões anteriores; se os dados salvos estiverem corrompidos
+    // (JSON inválido ou reprovados por validateState), guarda uma cópia de
+    // segurança com timestamp e devolve um estado vazio, para nunca travar
+    // o app por causa de dados ruins.
     function load() {
       if (!available) return { state: memory, status: "unavailable", persisted: false };
       let raw;
@@ -536,6 +643,8 @@
     };
   }
 
+  // API pública do módulo: tudo que o app.js pode usar. Object.freeze impede
+  // que alguém sobrescreva acidentalmente uma dessas funções em runtime.
   global.SchoolCounterCore = Object.freeze({
     VERSION,
     STORAGE_KEY,

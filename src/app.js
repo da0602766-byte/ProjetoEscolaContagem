@@ -1,15 +1,36 @@
+// Este arquivo é a camada de apresentação: cuida de desenhar a tela (via
+// strings de HTML) e de reagir a eventos do usuário (cliques, digitação,
+// envio de formulários). Toda a REGRA de negócio mora em src/core.js; as
+// peças visuais reutilizáveis (botão de instalar, barra de progresso, toast,
+// diálogo de confirmação, aviso de sistema, caixa de busca) moram em
+// src/componentes/*.js. Aqui só chamamos essas peças e atualizamos a tela
+// com o resultado.
+//
+// O padrão geral é: evento do usuário -> chama uma função do Core que
+// devolve um NOVO estado -> commit(novoEstado) salva e redesenha a tela.
+// Veja estudo/arquitetura.md para uma visão geral do fluxo de dados.
 (function startSchoolCounterApp() {
   "use strict";
 
   const Core = globalThis.SchoolCounterCore;
+  const UI = globalThis.SchoolCounterUI;
   const app = document.querySelector("#app");
   const toastRegion = document.querySelector("#toast-region");
   const confirmDialog = document.querySelector("#confirm-dialog");
 
-  if (!Core || !app || !toastRegion || !confirmDialog) {
+  if (!Core || !UI || !app || !toastRegion || !confirmDialog) {
     document.body.textContent = "Não foi possível iniciar o sistema.";
     return;
   }
+
+  // Peças reutilizáveis vindas de src/componentes/*.js.
+  const { escapeHtml, plural, formatTime, formatDateTime } = UI.Utilitarios;
+  const { renderBarraProgresso } = UI.BarraProgresso;
+  const { renderAvisoArmazenamento, renderAvisoNotificacao } = UI.AvisoSistema;
+  const { renderBotaoInstalar } = UI.BotaoInstalar;
+  const { renderCaixaBusca, renderBuscaVazia, filtrarListaVisivel } = UI.Busca;
+  const toast = UI.Toast.criarToast(toastRegion);
+  const dialogoConfirmacao = UI.DialogoConfirmacao.criarDialogoConfirmacao(confirmDialog);
 
   let browserStorage = null;
   try {
@@ -18,14 +39,17 @@
 
   const repository = Core.createRepository(browserStorage);
   const loaded = repository.load();
+  // `state` é a única fonte de verdade da aplicação (guarda lista de alunos,
+  // sessão de contagem e histórico). As variáveis abaixo são estado apenas de
+  // interface (não são salvas): qual aluno está sendo editado, qual tela está
+  // visível, o texto digitado nas buscas, etc.
   let state = loaded.state;
-  let editingId = null;
-  let activeView = "main";
-  const searchTerms = { setup: "", free: "" };
-  let actionLocked = false;
-  let toastTimer = 0;
-  let bootNotice = "";
-  let installPrompt = null;
+  let editingId = null; // id do aluno cujo formulário de edição está aberto, ou null
+  let activeView = "main"; // "main" (tela padrão) ou "history" (tela de histórico)
+  const searchTerms = { setup: "", free: "" }; // texto digitado nas buscas de cada tela
+  let actionLocked = false; // trava temporária contra cliques duplos/rápidos
+  let bootNotice = ""; // aviso mostrado após carregar (ex.: dados migrados/corrompidos)
+  let installPrompt = null; // evento do navegador para instalar o app como PWA
   let isInstalled = window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
 
   if (loaded.status === "corrupt") {
@@ -34,62 +58,20 @@
     bootNotice = "Seus dados da versão anterior foram recuperados.";
   }
 
-  function escapeHtml(value) {
-    return String(value)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#039;");
-  }
-
-  function plural(count, singular, pluralForm = `${singular}s`) {
-    return count === 1 ? singular : pluralForm;
-  }
-
-  function formatTime(timestamp) {
-    return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(timestamp);
-  }
-
-  function formatDateTime(timestamp) {
-    return new Intl.DateTimeFormat("pt-BR", {
-      dateStyle: "short",
-      timeStyle: "short",
-    }).format(timestamp);
-  }
-
-  function storageWarning() {
-    if (repository.isAvailable()) return "";
-    return `
-      <div class="system-alert system-alert--warning" role="alert">
-        <span aria-hidden="true">!</span>
-        <p><strong>Salvamento indisponível.</strong> Mantenha esta aba aberta; o navegador bloqueou o armazenamento local.</p>
-      </div>`;
-  }
-
-  function noticeBanner() {
-    if (!bootNotice) return "";
-    return `
-      <div class="system-alert" role="status">
-        <span aria-hidden="true">i</span>
-        <p>${escapeHtml(bootNotice)}</p>
-        <button type="button" data-action="dismiss-notice" aria-label="Fechar aviso">×</button>
-      </div>`;
-  }
-
+  // Rótulo do "chip" de salvamento mostrado nos cabeçalhos das telas.
   function savedLabel(timestamp) {
     if (!repository.isAvailable()) return "Não salvo";
     return timestamp ? `Salvo às ${formatTime(timestamp)}` : "Salvamento automático";
   }
 
-  function installButton() {
-    if (isInstalled || !installPrompt) return "";
-    return `
-      <button class="install-button" type="button" data-action="install-app">
-        <span aria-hidden="true">↓</span> Instalar aplicativo
-      </button>`;
-  }
+  // --- Funções de renderização -------------------------------------------
+  // Cada renderX() devolve uma string de HTML para uma tela inteira. `render()`
+  // (mais abaixo) decide qual delas usar de acordo com o estado atual e
+  // substitui todo o conteúdo de #app com `innerHTML`. É uma renderização
+  // simples "de cima a baixo": toda vez que o estado muda, a tela inteira é
+  // redesenhada (sem diffing como em frameworks como React/Vue).
 
+  // Tela inicial: cadastro/edição da lista de alunos.
   function renderSetup() {
     const sorted = Core.sortStudents(state.roster);
     const setupQuery = Core.foldName(searchTerms.setup);
@@ -120,12 +102,12 @@
               Histórico <span>${state.history.length}</span>
             </button>
             <div class="save-chip"><span aria-hidden="true">●</span> ${savedLabel(null)}</div>
-            ${installButton()}
+            ${renderBotaoInstalar({ instalavel: Boolean(installPrompt), instalado: isInstalled })}
           </div>
         </header>
 
-        ${storageWarning()}
-        ${noticeBanner()}
+        ${renderAvisoArmazenamento(repository.isAvailable())}
+        ${renderAvisoNotificacao(bootNotice)}
 
         <div class="setup-grid">
           <section class="setup-panel" aria-labelledby="add-title">
@@ -180,13 +162,13 @@
               ${sorted.length ? `<span class="alphabetical-chip">A–Z</span>` : ""}
             </div>
             ${sorted.length
-              ? `<div class="search-box">
-                  <span aria-hidden="true">⌕</span>
-                  <label class="sr-only" for="roster-search">Buscar aluno cadastrado</label>
-                  <input id="roster-search" type="search" data-list-search="setup" value="${escapeHtml(searchTerms.setup)}" placeholder="Buscar quem já está na lista..." autocomplete="off" />
-                  <span class="search-count" data-search-count>${visibleCount}</span>
-                </div>
-                <p class="search-empty" data-search-empty ${visibleCount ? "hidden" : ""}>Nenhum aluno encontrado.</p>`
+              ? renderCaixaBusca({
+                  id: "roster-search",
+                  chaveBusca: "setup",
+                  valor: searchTerms.setup,
+                  placeholder: "Buscar quem já está na lista...",
+                  contagem: visibleCount,
+                }) + renderBuscaVazia(visibleCount)
               : ""}
             <div class="student-list" role="list">${rows}</div>
           </section>
@@ -194,6 +176,8 @@
       </main>`;
   }
 
+  // Renderiza uma linha da lista de alunos: normal (nome + botões editar/remover)
+  // ou como formulário de edição, se `editingId` apontar para este aluno.
   function renderStudentRow(student, index) {
     const id = escapeHtml(student.id);
     const hidden = Core.foldName(student.name).includes(Core.foldName(searchTerms.setup)) ? "" : "hidden";
@@ -216,6 +200,8 @@
       </div>`;
   }
 
+  // Tela de contagem no modo "sequencial": mostra o aluno anterior, o atual
+  // e o próximo, com botões para confirmar ou desfazer.
   function renderCounting() {
     const session = state.session;
     const total = session.students.length;
@@ -234,18 +220,12 @@
             </div>
             <button class="hero-button" type="button" data-action="end-session">Encerrar</button>
           </div>
-          <div class="progress-meta">
-            <span>Progresso da turma</span>
-            <strong>${progress}%</strong>
-          </div>
-          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="Progresso da contagem">
-            <span style="width: ${progress}%"></span>
-          </div>
+          ${renderBarraProgresso({ rotulo: "Progresso da turma", percentual: progress, ariaLabel: "Progresso da contagem" })}
           <div class="save-chip save-chip--in-hero"><span aria-hidden="true">●</span> ${savedLabel(session.updatedAt)}</div>
         </header>
 
-        ${storageWarning()}
-        ${noticeBanner()}
+        ${renderAvisoArmazenamento(repository.isAvailable())}
+        ${renderAvisoNotificacao(bootNotice)}
 
         <section class="count-workspace" aria-labelledby="current-title">
           <div class="lock-note"><span aria-hidden="true">▣</span> Lista bloqueada até esta contagem ser encerrada</div>
@@ -280,6 +260,8 @@
       </main>`;
   }
 
+  // Tela de contagem no modo "livre": lista com busca onde cada aluno pode
+  // ser marcado/desmarcado em qualquer ordem.
   function renderFreeCounting() {
     const session = state.session;
     const total = session.students.length;
@@ -316,18 +298,12 @@
             </div>
             <button class="hero-button" type="button" data-action="end-session">Encerrar</button>
           </div>
-          <div class="progress-meta">
-            <span>Alunos marcados</span>
-            <strong>${progress}%</strong>
-          </div>
-          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress}" aria-label="Progresso da seleção">
-            <span style="width: ${progress}%"></span>
-          </div>
+          ${renderBarraProgresso({ rotulo: "Alunos marcados", percentual: progress, ariaLabel: "Progresso da seleção" })}
           <div class="save-chip save-chip--in-hero"><span aria-hidden="true">●</span> ${savedLabel(session.updatedAt)}</div>
         </header>
 
-        ${storageWarning()}
-        ${noticeBanner()}
+        ${renderAvisoArmazenamento(repository.isAvailable())}
+        ${renderAvisoNotificacao(bootNotice)}
 
         <section class="free-workspace" aria-labelledby="free-title">
           <div class="lock-note"><span aria-hidden="true">▣</span> Cadastro bloqueado durante esta contagem</div>
@@ -340,13 +316,15 @@
             <span class="selected-badge">${session.counted} marcado${session.counted === 1 ? "" : "s"}</span>
           </div>
 
-          <div class="search-box search-box--free">
-            <span aria-hidden="true">⌕</span>
-            <label class="sr-only" for="free-search">Buscar aluno para contar</label>
-            <input id="free-search" type="search" data-list-search="free" value="${escapeHtml(searchTerms.free)}" placeholder="Buscar aluno..." autocomplete="off" />
-            <span class="search-count" data-search-count>${visibleCount}</span>
-          </div>
-          <p class="search-empty" data-search-empty ${visibleCount ? "hidden" : ""}>Nenhum aluno encontrado.</p>
+          ${renderCaixaBusca({
+            id: "free-search",
+            chaveBusca: "free",
+            valor: searchTerms.free,
+            placeholder: "Buscar aluno...",
+            contagem: visibleCount,
+            extraClass: "search-box--free",
+          })}
+          ${renderBuscaVazia(visibleCount)}
 
           <div class="free-list" role="list" aria-label="Lista de alunos para contagem">${rows}</div>
 
@@ -360,6 +338,8 @@
       </main>`;
   }
 
+  // Tela de histórico: lista todas as contagens já concluídas ou canceladas,
+  // da mais recente para a mais antiga, com detalhes expansíveis por registro.
   function renderHistory() {
     const entries = [...state.history].sort((a, b) => b.endedAt - a.endedAt);
     const cards = entries.length
@@ -404,7 +384,7 @@
           </div>
           <button class="hero-button" type="button" data-action="back-history">← Voltar</button>
         </header>
-        ${storageWarning()}
+        ${renderAvisoArmazenamento(repository.isAvailable())}
         <section class="history-workspace">
           <div class="history-toolbar">
             <p>Os registros ficam armazenados neste navegador.</p>
@@ -415,13 +395,15 @@
       </main>`;
   }
 
+  // Tela final, mostrada quando uma sessão chega ao status "done": resumo da
+  // contagem concluída, com opção de iniciar uma nova.
   function renderDone() {
     const session = state.session;
     const total = session.students.length;
     const isFree = session.mode === "free";
     return `
       <main class="app-shell done-screen" id="main-content">
-        ${storageWarning()}
+        ${renderAvisoArmazenamento(repository.isAvailable())}
         <section class="done-card">
           <div class="success-mark" aria-hidden="true">✓</div>
           <p class="section-kicker">Tudo certo</p>
@@ -447,6 +429,9 @@
       </main>`;
   }
 
+  // Decide qual tela mostrar, olhando para `activeView` e para o estado da
+  // sessão atual (state.session). É a única função que efetivamente escreve
+  // no DOM (via innerHTML) — chamada sempre que algo muda.
   function render() {
     if (activeView === "history") app.innerHTML = renderHistory();
     else if (state.session?.status === "counting" && state.session.mode === "free") app.innerHTML = renderFreeCounting();
@@ -455,48 +440,31 @@
     else app.innerHTML = renderSetup();
   }
 
-  function showToast(message, type = "success") {
-    window.clearTimeout(toastTimer);
-    toastRegion.innerHTML = `<div class="toast toast--${type}" role="status">${escapeHtml(message)}</div>`;
-    toastTimer = window.setTimeout(() => {
-      toastRegion.innerHTML = "";
-    }, 2800);
-  }
-
+  // Trata erros lançados pelas funções do Core. Um DomainError (erro de
+  // regra de negócio) mostra sua mensagem amigável; qualquer outro erro
+  // (bug inesperado) mostra uma mensagem genérica em vez de vazar detalhes técnicos.
   function handleError(error) {
-    showToast(error instanceof Core.DomainError ? error.message : "Não foi possível concluir essa ação.", "error");
+    toast.mostrar(error instanceof Core.DomainError ? error.message : "Não foi possível concluir essa ação.", "error");
   }
 
+  // Função central que aplica um novo estado: salva no repositório, atualiza
+  // a variável `state`, fecha qualquer edição em aberto e redesenha a tela.
+  // Praticamente todo handler de evento termina chamando commit(...).
   function commit(nextState, message) {
     const result = repository.save(nextState);
     state = nextState;
     editingId = null;
     render();
     if (!result.persisted) {
-      showToast("A alteração vale nesta aba, mas não pôde ser salva no navegador.", "error");
+      toast.mostrar("A alteração vale nesta aba, mas não pôde ser salva no navegador.", "error");
     } else if (message) {
-      showToast(message, "success");
+      toast.mostrar(message, "success");
     }
   }
 
-  function confirmAction({ title, message, confirmLabel, danger = false }) {
-    confirmDialog.innerHTML = `
-      <form method="dialog" class="dialog-card">
-        <div class="dialog-icon ${danger ? "dialog-icon--danger" : ""}" aria-hidden="true">${danger ? "!" : "✓"}</div>
-        <h2 id="dialog-title">${escapeHtml(title)}</h2>
-        <p>${escapeHtml(message)}</p>
-        <div class="dialog-actions">
-          <button class="button button--secondary" value="cancel">Cancelar</button>
-          <button class="button ${danger ? "button--danger" : "button--primary"}" value="confirm">${escapeHtml(confirmLabel)}</button>
-        </div>
-      </form>`;
-
-    return new Promise((resolve) => {
-      confirmDialog.addEventListener("close", () => resolve(confirmDialog.returnValue === "confirm"), { once: true });
-      confirmDialog.showModal();
-    });
-  }
-
+  // Evita que ações rápidas de contagem (confirmar/desfazer aluno, marcar/
+  // desmarcar na contagem livre) sejam disparadas duas vezes por um duplo
+  // toque acidental na tela. Ignora chamadas repetidas por 450ms.
   function lockRapidAction(callback) {
     if (actionLocked) return;
     actionLocked = true;
@@ -509,8 +477,12 @@
     }
   }
 
+  // Gera e baixa um arquivo .csv com a lista de alunos em ordem alfabética.
   function downloadRoster() {
     const rows = Core.sortStudents(state.roster);
+    // Protege contra "CSV injection": se um nome começar com =, +, - ou @,
+    // programas como Excel podem interpretá-lo como fórmula. Prefixando com
+    // aspas simples, o valor é forçado a ser tratado como texto puro.
     const safeCell = (value) => {
       const protectedValue = /^[=+\-@]/.test(value) ? `'${value}` : value;
       return `"${protectedValue.replace(/"/g, '""')}"`;
@@ -525,32 +497,27 @@
     link.click();
     link.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
-    showToast("Lista baixada com sucesso.");
+    toast.mostrar("Lista baixada com sucesso.");
   }
 
-  function filterVisibleList(input) {
-    const query = Core.foldName(input.value);
-    const items = [...app.querySelectorAll("[data-search-name]")];
-    let visible = 0;
-    for (const item of items) {
-      const matches = item.dataset.searchName.includes(query);
-      item.hidden = !matches;
-      if (matches) visible += 1;
-    }
-    const counter = app.querySelector("[data-search-count]");
-    const empty = app.querySelector("[data-search-empty]");
-    if (counter) counter.textContent = String(visible);
-    if (empty) empty.hidden = visible !== 0;
-  }
+  // --- Eventos --------------------------------------------------------
+  // Em vez de colocar um listener em cada botão/campo, os eventos são
+  // capturados uma única vez no elemento #app e delegados conforme o
+  // elemento clicado/alterado (via `closest` + atributos data-*). Isso
+  // funciona mesmo depois que o HTML é totalmente redesenhado por render(),
+  // porque o listener continua no elemento pai (#app), que nunca é recriado.
 
+  // Atualiza o texto de busca digitado e filtra a lista correspondente.
   app.addEventListener("input", (event) => {
     const input = event.target.closest("input[data-list-search]");
     if (input) {
       searchTerms[input.dataset.listSearch] = input.value;
-      filterVisibleList(input);
+      filtrarListaVisivel(app, input);
     }
   });
 
+  // Trata o envio dos formulários de "adicionar aluno" e "editar aluno".
+  // `event.preventDefault()` evita o recarregamento de página padrão do HTML.
   app.addEventListener("submit", (event) => {
     const form = event.target.closest("form");
     if (!form) return;
@@ -570,6 +537,9 @@
     }
   });
 
+  // Trata todos os cliques em botões com atributo data-action, um grande
+  // "switch" que decide o que fazer conforme a ação. Ações destrutivas ou
+  // importantes usam dialogoConfirmacao.confirmar(...) antes de chamar o Core.
   app.addEventListener("click", async (event) => {
     const button = event.target.closest("button[data-action]");
     if (!button || button.disabled) return;
@@ -583,7 +553,7 @@
         const choice = await currentPrompt.userChoice;
         installPrompt = null;
         render();
-        showToast(choice.outcome === "accepted" ? "Aplicativo instalado com sucesso." : "Instalação cancelada.", choice.outcome === "accepted" ? "success" : "info");
+        toast.mostrar(choice.outcome === "accepted" ? "Aplicativo instalado com sucesso." : "Instalação cancelada.", choice.outcome === "accepted" ? "success" : "info");
       } else if (action === "dismiss-notice") {
         bootNotice = "";
         render();
@@ -596,7 +566,7 @@
       } else if (action === "delete-history") {
         const entry = state.history.find((item) => item.id === button.dataset.id);
         if (!entry) return;
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Excluir este registro?",
           message: `A contagem de ${formatDateTime(entry.endedAt)} será removida permanentemente do histórico.`,
           confirmLabel: "Excluir registro",
@@ -604,7 +574,7 @@
         });
         if (confirmed) commit(Core.deleteHistoryEntry(state, entry.id), "Registro excluído.");
       } else if (action === "clear-history") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Limpar todo o histórico?",
           message: `Os ${state.history.length} ${plural(state.history.length, "registro")} serão removidos permanentemente.`,
           confirmLabel: "Limpar histórico",
@@ -621,7 +591,7 @@
       } else if (action === "remove") {
         const student = state.roster.find((item) => item.id === button.dataset.id);
         if (!student) return;
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Remover aluno?",
           message: `${student.name} será removido da lista antes da contagem.`,
           confirmLabel: "Remover",
@@ -629,7 +599,7 @@
         });
         if (confirmed) commit(Core.removeStudent(state, student.id), `${student.name} removido.`);
       } else if (action === "clear-roster") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Limpar toda a lista?",
           message: `Os ${state.roster.length} alunos cadastrados serão removidos. Essa ação não pode ser desfeita.`,
           confirmLabel: "Limpar lista",
@@ -639,14 +609,14 @@
       } else if (action === "download") {
         downloadRoster();
       } else if (action === "start-sequential") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Contar em ordem?",
           message: `Os ${state.roster.length} ${plural(state.roster.length, "aluno")} serão apresentados um de cada vez em ordem alfabética. A lista ficará bloqueada.`,
           confirmLabel: "Iniciar",
         });
         if (confirmed) commit(Core.startSession(state, Date.now(), "sequential"), "Contagem em ordem iniciada.");
       } else if (action === "start-free") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Iniciar contagem livre?",
           message: `Você poderá buscar e marcar qualquer aluno da lista. Não será necessário seguir a ordem nem selecionar todos.`,
           confirmLabel: "Abrir lista",
@@ -676,14 +646,14 @@
           commit(nextState, wasSelected ? `${student.name} desmarcado.` : `${student.name} contabilizado.`);
         });
       } else if (action === "finish-free") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Concluir contagem livre?",
           message: `${state.session.counted} de ${state.session.students.length} alunos foram marcados. Você poderá iniciar outra contagem depois.`,
           confirmLabel: "Concluir",
         });
         if (confirmed) commit(Core.finishFreeSession(state), "Contagem livre concluída e salva.");
       } else if (action === "end-session") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Encerrar contagem atual?",
           message: "O progresso desta contagem será apagado. A lista de alunos será mantida para edição.",
           confirmLabel: "Encerrar contagem",
@@ -691,7 +661,7 @@
         });
         if (confirmed) commit(Core.discardSession(state), "Contagem encerrada; lista mantida.");
       } else if (action === "new-count") {
-        const confirmed = await confirmAction({
+        const confirmed = await dialogoConfirmacao.confirmar({
           title: "Preparar nova contagem?",
           message: "O resultado concluído será encerrado e a lista atual voltará a ficar disponível para edição.",
           confirmLabel: "Continuar",
@@ -703,6 +673,10 @@
     }
   });
 
+  // --- Instalação como PWA e modo offline ------------------------------
+  // O navegador dispara "beforeinstallprompt" quando o app pode ser instalado
+  // como aplicativo (PWA). Guardamos o evento para disparar o prompt de
+  // instalação depois, quando o usuário clicar no botão "Instalar aplicativo".
   window.addEventListener("beforeinstallprompt", (event) => {
     event.preventDefault();
     installPrompt = event;
@@ -713,24 +687,29 @@
     installPrompt = null;
     isInstalled = true;
     render();
-    showToast("Aplicativo instalado e pronto para uso.");
+    toast.mostrar("Aplicativo instalado e pronto para uso.");
   });
 
+  // Registra o service worker (sw.js), que permite o app funcionar offline.
+  // Só é feito via http(s) porque service workers não funcionam com file://.
   if ("serviceWorker" in navigator && window.location.protocol.startsWith("http")) {
     window.addEventListener("load", () => {
       navigator.serviceWorker.register("./sw.js").catch(() => {
-        showToast("O modo offline não pôde ser ativado neste acesso.", "error");
+        toast.mostrar("O modo offline não pôde ser ativado neste acesso.", "error");
       });
     });
   }
 
+  // Desenha a tela pela primeira vez assim que o script carrega.
   render();
 
+  // Avisa o usuário sobre o que aconteceu ao carregar os dados salvos
+  // (sessão retomada, resultado recuperado, ou armazenamento indisponível).
   if (loaded.status === "restored" && state.session?.status === "counting") {
-    showToast(`Contagem retomada: ${state.session.counted} de ${state.session.students.length}.`, "info");
+    toast.mostrar(`Contagem retomada: ${state.session.counted} de ${state.session.students.length}.`, "info");
   } else if (loaded.status === "restored" && state.session?.status === "done") {
-    showToast("Resultado da última contagem recuperado.", "info");
+    toast.mostrar("Resultado da última contagem recuperado.", "info");
   } else if (loaded.status === "unavailable") {
-    showToast("O navegador não permitiu ativar o salvamento automático.", "error");
+    toast.mostrar("O navegador não permitiu ativar o salvamento automático.", "error");
   }
 })();
