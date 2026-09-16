@@ -1,0 +1,11 @@
+# Requisitos do backend (gerado a partir de package.json)
+# Nenhuma dependência foi encontrada em `package.json`.
+#
+# Instruções:
+# - Se seu backend for Node.js e você quer listar dependências instaladas localmente, execute:
+#     npm list --depth=0
+# - Para registrar dependências atuais em um arquivo npm, use `package.json` e `package-lock.json` (gerados por `npm install`).
+# - Se seu backend for Python, gere os requisitos com:
+#     pip freeze > requirements.txt
+#
+# Se quiser, eu posso executar `npm list --depth=0` e preencher este arquivo automaticamente.
