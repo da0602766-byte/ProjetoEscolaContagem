@@ -9,7 +9,7 @@ O cadastro possui busca instantânea para conferir quem já está na lista. Há 
 
 ## Como usar no navegador
 
-Abra `index.html` em um navegador moderno. Não é necessário instalar dependências nem executar um servidor.
+Abra `frontend/index.html` em um navegador moderno. Não é necessário instalar dependências nem executar um servidor.
 
 O navegador salva automaticamente a lista, o modo escolhido, os alunos contabilizados, o aluno atual quando aplicável e o resultado da sessão no `localStorage`. A lista fica bloqueada enquanto existe uma contagem em andamento.
 
@@ -27,8 +27,9 @@ Depois do primeiro acesso, a tela principal e a contagem funcionam sem internet.
 
 ## Testes
 
-Com Node.js instalado, execute:
+Com Node.js instalado, execute dentro de `frontend/`:
 
 ```sh
+cd frontend
 npm test
 ```
