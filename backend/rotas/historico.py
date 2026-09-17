@@ -1,5 +1,7 @@
 from fastapi import APIRouter
 
+from esquemas.historico import RegistroHistorico
+
 router = APIRouter()
 
 HISTORICO = [
@@ -20,6 +22,6 @@ HISTORICO = [
 ]
 
 
-@router.get("/historico")
+@router.get("/historico", response_model=list[RegistroHistorico])
 def listar_historico():
     return HISTORICO
