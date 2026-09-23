@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 
-from esquemas.aluno import Aluno
+from esquemas.aluno import Aluno, AlunoCriar
 
 router = APIRouter()
 
@@ -22,3 +22,10 @@ def obter_aluno(aluno_id: str):
         if aluno["id"] == aluno_id:
             return aluno
     raise HTTPException(status_code=404, detail="Aluno não encontrado.")
+
+
+@router.post("/alunos", response_model=Aluno, status_code=201)
+def criar_aluno(aluno: AlunoCriar):
+    novo_aluno = {"id": str(len(ALUNOS) + 1), "nome": aluno.nome}
+    ALUNOS.append(novo_aluno)
+    return novo_aluno

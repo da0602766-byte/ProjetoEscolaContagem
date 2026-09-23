@@ -11,6 +11,8 @@
     return;
   }
 
+  const API_BASE_URL = "http://127.0.0.1:8000";
+
   let browserStorage = null;
   try {
     browserStorage = window.localStorage;
@@ -528,6 +530,13 @@
     showToast("Lista baixada com sucesso.");
   }
 
+  async function fetchRosterFromApi() {
+    const response = await fetch(`${API_BASE_URL}/alunos`);
+    if (!response.ok) throw new Error("Falha ao buscar alunos no servidor.");
+    const alunos = await response.json();
+    return alunos.map((aluno) => ({ id: aluno.id, name: aluno.nome }));
+  }
+
   function filterVisibleList(input) {
     const query = Core.foldName(input.value);
     const items = [...app.querySelectorAll("[data-search-name]")];
@@ -732,5 +741,19 @@
     showToast("Resultado da última contagem recuperado.", "info");
   } else if (loaded.status === "unavailable") {
     showToast("O navegador não permitiu ativar o salvamento automático.", "error");
+  }
+
+  if (state.session === null) {
+    fetchRosterFromApi()
+      .then((roster) => {
+        try {
+          commit({ ...state, roster }, "Lista de alunos carregada do servidor.");
+        } catch {
+          showToast("O servidor enviou uma lista inválida. Mantendo os dados salvos neste navegador.", "error");
+        }
+      })
+      .catch(() => {
+        showToast("Não foi possível carregar os alunos do servidor. Usando dados salvos neste navegador.", "error");
+      });
   }
 })();
